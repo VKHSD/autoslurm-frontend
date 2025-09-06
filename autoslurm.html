@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoSlurm — Gaussian batch helper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#151922; --text:#e6e6e6; --muted:#9aa3b2; --border:#232838;
+    --accent:#7aa2ff; --accent2:#55e9bc; --warn:#ffbe55;
+  }
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);background:#10131d}
+  header h1{font-size:16px;margin:0}
+  .muted{color:var(--muted);font-size:12px}
+  /* wider left panel + responsive stacking */
+  .wrap{
+    display:grid; grid-template-columns:740px 1fr; gap:12px; padding:12px;
+    height:calc(100vh - 58px); box-sizing:border-box;
+  }
+  @media (max-width: 1200px){
+    .wrap{ grid-template-columns:1fr; grid-template-rows:auto 1fr; }
+  }
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0}
+  .panel h2{margin:0;font-size:14px;padding:10px 12px;border-bottom:1px solid var(--border);color:#cfe0ff}
+  .panel .content{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+  .row{display:flex;gap:8px;align-items:center}
+  .row.stacked{flex-direction:column;align-items:stretch}
+  label{font-size:12px;color:var(--muted);min-width:160px}
+  input[type="text"],input[type="email"],input[type="number"],textarea,select{
+    background:#0e111a;color:#e6e6e6;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:13px;flex:1;min-width:0
+  }
+  textarea{resize:vertical}
+  .btn{background:#1a2030;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;cursor:pointer}
+  .btn:hover{border-color:#354068;transform:translateY(-1px)}
+  .btn.accent{background:#16213a;border-color:#2b3a66}
+  .btn.warn{background:#2a2312;border-color:#54411a;color:#ffdb9e}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  @media (max-width: 520px){ .grid2{ grid-template-columns:1fr; } }
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0e1526;border:1px solid #273355;color:#cfe0ff;font-size:12px}
+  .drop{border:2px dashed #2c3350;border-radius:12px;padding:16px;text-align:center;color:#b9c4dc;background:#0f1422}
+  .drop.drag{background:#0c1a2e;border-color:#3e4b78}
+  .filelist{border:1px solid var(--border);border-radius:8px}
+  .fileitem{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px}
+  .fileitem:last-child{border-bottom:none}
+  .tabs{display:flex;gap:8px;border-bottom:1px solid var(--border);padding:8px}
+  .tab{padding:6px 10px;border:1px solid var(--border);border-bottom:none;border-radius:8px 8px 0 0;background:#121624;cursor:pointer;font-size:12px}
+  .tab.active{background:#0e111a}
+  pre{margin:0;padding:10px;background:#0e111a;border-top:1px solid var(--border);height:100%;overflow:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre}
+  .status{position:fixed;right:12px;bottom:12px;background:#121624;border:1px solid #2b3453;border-radius:10px;padding:8px 10px;font-size:12px}
+  .rightcontent{display:grid;grid-template-rows:auto auto 1fr auto;gap:10px;height:100%}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap}
+  small.help{color:#9aa3b2}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>AutoSlurm</h1>
+    <div class="muted">Drop .gjf → get .inp + .slurm (+ submit_all.sh). Settings & custom presets persist locally.</div>
+  </div>
+  <div><span class="pill" id="count">0 files</span></div>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: Settings -->
+  <div class="panel">
+    <h2>Settings & Presets</h2>
+    <div class="content">
+      <div class="row">
+        <label>Preset</label>
+        <select id="presetSelect"></select>
+        <button class="btn" id="applyPreset">Apply</button>
+      </div>
+      <div class="btnrow">
+        <button class="btn" id="saveAsPreset">Save as New…</button>
+        <button class="btn" id="savePreset">Save Changes</button>
+        <button class="btn warn" id="deletePreset">Delete Preset</button>
+        <button class="btn warn" id="resetPreset">Reset Defaults</button>
+      </div>
+
+      <div class="row"><label>Profile</label>
+        <select id="profile">
+          <option value="ls6">TACC Lonestar6 (Gaussian)</option>
+          <option value="generic">Generic SLURM</option>
+        </select>
+      </div>
+
+      <div class="grid2">
+        <div class="row"><label>Project / Account</label><input id="account" type="text" placeholder="e.g. CHEM123"></div>
+        <div class="row"><label>Email</label><input id="email" type="email" placeholder="you@uni.edu"></div>
+      </div>
+
+      <div class="grid2">
+        <div class="row"><label>Partition</label><input id="partition" type="text" placeholder="normal" value="normal"></div>
+        <div class="row"><label>Walltime (hh:mm:ss)</label><input id="wall" type="text" value="47:50:00"></div>
+      </div>
+
+      <div class="grid2">
+        <div class="row"><label>Nodes</label><input id="nodes" type="number" min="1" value="1"></div>
+        <div class="row"><label>Tasks / Node</label><input id="ntasks" type="number" min="1" value="1"></div>
+      </div>
+
+      <div class="grid2">
+        <div class="row"><label>nprocshared</label><input id="nproc" type="number" min="1" value="12"></div>
+        <div class="row"><label>mem</label><input id="mem" type="text" value="56GB"></div>
+      </div>
+
+      <div class="row"><label>Scratch dir</label><input id="scratch" type="text" value="/dev/shm/$USER"></div>
+
+      <div class="row"><label>Run from</label>
+        <select id="runFrom">
+          <option value="scratch">Scratch ($GAUSS_SCRDIR)</option>
+          <option value="submit">Submit dir ($SLURM_SUBMIT_DIR)</option>
+        </select>
+      </div>
+
+      <div class="row stacked">
+        <label>Registry folder (abs path)</label>
+        <input id="registry" type="text" placeholder="/home1/xxxxx/you/gaussian">
+        <small class="help">Used when “Run from” = Scratch: .inp is copied in and *.log copied back here. Leave blank to copy back to submit dir.</small>
+      </div>
+
+      <div class="row">
+        <label>Include %chk line</label>
+        <input id="includeChk" type="checkbox" checked>
+        <small class="help">Uncheck if checkpoint files have been causing memory/queue issues.</small>
+      </div>
+
+      <div class="row stacked">
+        <label>Route line (# …)</label>
+        <input id="route" type="text" value="# opt freq B3LYP/6-31G(d) geom=connectivity">
+      </div>
+
+      <div class="muted">Presets live in your browser (localStorage). Built-ins are read-only; your customs can be edited or removed.</div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Files + Preview + Actions -->
+  <div class="panel">
+    <h2>Batch</h2>
+    <div class="content rightcontent">
+      <div id="drop" class="drop">Drag & drop .gjf files here (or <input id="filepick" type="file" multiple accept=".gjf" style="display:inline">)</div>
+      <div class="filelist" id="filelist"></div>
+
+      <div style="display:flex;flex-direction:column;min-height:240px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div class="tabs">
+          <div class="tab active" data-tab="inp">Preview .inp</div>
+          <div class="tab" data-tab="slurm">Preview .slurm</div>
+        </div>
+        <pre id="preview">(Open a file preview)</pre>
+      </div>
+
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button class="btn" id="genZip">Generate ZIP</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="status" id="status" hidden>Ready.</div>
+
+<script>
+/* ---------- Keys ---------- */
+const KEY_SETTINGS = 'autoslurm_settings_v3';
+const KEY_PRESETS  = 'autoslurm_user_presets_v3'; // { name: settings }
+
+/* ---------- Defaults & built-ins ---------- */
+function defaultSettings(){
+  return {
+    profile: 'ls6',
+    account: 'CHEM123',
+    email: '',
+    partition: 'normal',
+    wall: '47:50:00',
+    nodes: 1,
+    ntasks: 1,
+    nproc: 12,
+    mem: '56GB',
+    scratch: '/dev/shm/$USER',
+    runFrom: 'scratch',             // 'scratch' | 'submit'
+    registry: '',                   // abs path – optional
+    includeChk: true,               // new: toggle %chk in .inp
+    route: '# opt freq B3LYP/6-31G(d) geom=connectivity'
+  };
+}
+
+// Built-ins (read-only)
+const BUILTIN_PRESETS = [
+  { name:'TACC Lonestar6 — standard (12c/56GB)', builtin:true,
+    settings:{...defaultSettings(), includeChk:true} },
+  { name:'TACC Lonestar6 — Copy-to-scratch (no %chk)', builtin:true,
+    settings:{...defaultSettings(), includeChk:false} },
+  { name:'Generic — small (8c/32GB, 24h)', builtin:true,
+    settings:{profile:'generic', account:'ACCOUNT', email:'', partition:'compute', wall:'24:00:00',
+              nodes:1, ntasks:1, nproc:8, mem:'32GB', scratch:'/scratch/$USER',
+              runFrom:'submit', registry:'', includeChk:true,
+              route:'# opt freq B3LYP/6-31G(d) geom=connectivity'} },
+  { name:'Generic — big (32c/128GB, 48h)', builtin:true,
+    settings:{profile:'generic', account:'ACCOUNT', email:'', partition:'compute', wall:'48:00:00',
+              nodes:1, ntasks:1, nproc:32, mem:'128GB', scratch:'/scratch/$USER',
+              runFrom:'submit', registry:'', includeChk:true,
+              route:'# opt freq B3LYP/6-31G(d) geom=connectivity'} },
+];
+
+/* ---------- UI helpers ---------- */
+function el(id){ return document.getElementById(id); }
+function val(id){ return el(id).value.trim(); }
+function num(id){ return parseInt(el(id).value,10)||0; }
+function setv(id,v){ el(id).value = v; }
+function toast(msg, ms=2500){ const s=el('status'); s.textContent=msg; s.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>s.hidden=true,ms); }
+
+/* ---------- Settings persistence ---------- */
+function loadSettings(){
+  try{ return {...defaultSettings(), ...(JSON.parse(localStorage.getItem(KEY_SETTINGS)||'{}'))}; }
+  catch(_){ return defaultSettings(); }
+}
+function saveSettings(s){ localStorage.setItem(KEY_SETTINGS, JSON.stringify(s)); }
+function currentSettings(){
+  return {
+    profile: val('profile'),
+    account: val('account'),
+    email: val('email'),
+    partition: val('partition'),
+    wall: val('wall'),
+    nodes: num('nodes'),
+    ntasks: num('ntasks'),
+    nproc: num('nproc'),
+    mem: val('mem'),
+    scratch: val('scratch'),
+    runFrom: val('runFrom'),
+    registry: val('registry'),
+    includeChk: el('includeChk').checked,
+    route: val('route')
+  };
+}
+function applySettingsToUI(s){
+  setv('profile', s.profile); setv('account', s.account); setv('email', s.email);
+  setv('partition', s.partition); setv('wall', s.wall);
+  setv('nodes', s.nodes); setv('ntasks', s.ntasks);
+  setv('nproc', s.nproc); setv('mem', s.mem);
+  setv('scratch', s.scratch); setv('runFrom', s.runFrom);
+  setv('registry', s.registry||'');
+  el('includeChk').checked = !!s.includeChk;
+  setv('route', s.route);
+}
+
+/* ---------- Presets ---------- */
+function loadUserPresets(){
+  try{ return JSON.parse(localStorage.getItem(KEY_PRESETS)||'{}'); }catch(_){ return {}; }
+}
+function saveUserPresets(map){ localStorage.setItem(KEY_PRESETS, JSON.stringify(map)); }
+
+function refreshPresetSelect(){
+  const sel = el('presetSelect'); sel.innerHTML='';
+
+  // “My saved preset (current settings)”
+  const optMine = document.createElement('option');
+  optMine.value = '__mine__';
+  optMine.textContent = 'My saved preset';
+  sel.appendChild(optMine);
+
+  // Built-ins
+  BUILTIN_PRESETS.forEach((p,i)=>{
+    const o = document.createElement('option');
+    o.value = `__builtin_${i}`;
+    o.textContent = p.name + ' (builtin)';
+    sel.appendChild(o);
+  });
+
+  // User customs
+  const map = loadUserPresets();
+  const keys = Object.keys(map).sort((a,b)=>a.localeCompare(b));
+  if(keys.length){
+    const grp = document.createElement('optgroup'); grp.label='Custom presets';
+    keys.forEach(name=>{
+      const o = document.createElement('option');
+      o.value = `user:${name}`;
+      o.textContent = name;
+      grp.appendChild(o);
+    });
+    sel.appendChild(grp);
+  }
+  // default selection
+  sel.value='__mine__';
+}
+
+function getPresetByValue(valStr){
+  if(valStr==='__mine__') return { name:'My saved preset', builtin:false, settings:loadSettings() };
+  if(valStr.startsWith('__builtin_')){
+    const idx = parseInt(valStr.replace('__builtin_',''),10);  // FIX: correct index extraction
+    return BUILTIN_PRESETS[idx];
+  }
+  if(valStr.startsWith('user:')){
+    const name = valStr.slice(5); const map=loadUserPresets(); return { name, builtin:false, settings:map[name] };
+  }
+  return null;
+}
+
+/* ---------- Gaussian parsing (tolerant) ---------- */
+function parseGaussianGJF(text){
+  const lines = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+  let i = 0;
+  while(i<lines.length && lines[i].trim()==="") i++;
+  while(i<lines.length && lines[i].trim().startsWith('%')) i++;
+
+  let routeStart = -1;
+  for(let k=i;k<lines.length;k++){
+    if(lines[k].trim().startsWith('#')) { routeStart = k; break; }
+    if(lines[k].trim()==="") break;
+  }
+
+  let afterRoute = i;
+  if(routeStart>=0){
+    let k = routeStart+1;
+    while(k<lines.length && lines[k].trim()!=="") k++;
+    afterRoute = k;
+    if(afterRoute<lines.length && lines[afterRoute].trim()==="") afterRoute++;
+  }else{
+    afterRoute = i;
+  }
+
+  const chargeIdx = lines.findIndex((ln,idx)=> idx>=afterRoute && /^\s*-?\d+\s+-?\d+\s*$/.test(ln));
+  let titleBlock = 'AutoSlurm job';
+  let bodyStart = afterRoute;
+  if(chargeIdx>afterRoute){
+    let tEnd = chargeIdx-1;
+    while(tEnd>=afterRoute && lines[tEnd].trim()==="") tEnd--;
+    if(tEnd>=afterRoute){
+      let tBeg = tEnd;
+      while(tBeg>afterRoute && lines[tBeg-1].trim()!=="") tBeg--;
+      titleBlock = lines.slice(tBeg, tEnd+1).join("\n");
+      bodyStart = chargeIdx;
+    }else{
+      bodyStart = chargeIdx;
+    }
+  }else{
+    bodyStart = afterRoute;
+  }
+
+  const body = lines.slice(bodyStart).join("\n").trimEnd();
+  return { title: titleBlock, body };
+}
+
+function makeINPFromGJF(gjfText, jobName, settings){
+  const { title, body } = parseGaussianGJF(gjfText);
+  const link0List = [];
+  if(settings.includeChk) link0List.push(`%chk=${jobName}.chk`);   // NEW: optional
+  link0List.push(`%nprocshared=${settings.nproc}`);
+  link0List.push(`%mem=${settings.mem}`);
+  link0List.push(''); // blank
+
+  const route = (settings.route || '#').trim();
+  return [ link0List.join("\n"), route, '', title, '', body ].join("\n") + "\n";
+}
+
+/* ---------- SLURM templates ---------- */
+function sanitizeJobName(name){
+  return name.replace(/\s+/g,'_').replace(/[^A-Za-z0-9_.-]/g,'_').replace(/^_+|_+$/g,'');
+}
+
+function slurmFor(profile, jobName, s){
+  const header =
+`#!/bin/bash
+#----------------------------
+# SLURM script generated by AutoSlurm
+#----------------------------
+
+#SBATCH -J ${jobName}
+#SBATCH -o ${jobName}.%j.out
+#SBATCH -e ${jobName}.%j.err
+#SBATCH -p ${s.partition}
+#SBATCH -N ${s.nodes}
+#SBATCH -n ${s.ntasks}
+#SBATCH -A ${s.account}
+#SBATCH -t ${s.wall}
+${s.email ? `#SBATCH --mail-user=${s.email}\n#SBATCH --mail-type=all` : ''}
+
+echo "Starting job on $(date)"
+module load gaussian
+module list
+
+export GAUSS_SCRDIR=${s.scratch}
+mkdir -p "$GAUSS_SCRDIR"
+`;
+
+  // Body: run either from scratch or submit dir
+  let body = '';
+  if(s.runFrom === 'scratch'){
+    const srcInp = s.registry ? `${s.registry}/${jobName}.inp` : `$SLURM_SUBMIT_DIR/${jobName}.inp`;
+    const copyBack = s.registry ? s.registry : '$SLURM_SUBMIT_DIR';
+    body =
+`cd "$GAUSS_SCRDIR"
+echo "Working dir: $(pwd)"
+echo "Copying input from: ${srcInp}"
+cp ${srcInp} .
+
+echo "Launching Gaussian..."
+time g16 < ${jobName}.inp > ${jobName}.log
+
+echo "Copying logs back to: ${copyBack}"
+cp *.log ${copyBack}
+`;
+  } else {
+    body =
+`cd "$SLURM_SUBMIT_DIR"
+echo "Working dir: $(pwd)"
+echo "Launching Gaussian..."
+time g16 < ${jobName}.inp > ${jobName}.log
+`;
+  }
+
+  const footer = `echo "Job complete at $(date)"\n`;
+  return header + '\n' + body + '\n' + footer;
+}
+
+/* ---------- State & Rendering ---------- */
+const files = []; // {name, text}
+let activeIndex = -1;
+let previewTab = 'inp';
+
+function renderFileList(){
+  const list = el('filelist'); list.innerHTML='';
+  if(files.length===0){ list.innerHTML='<div class="fileitem" style="justify-content:center;color:var(--muted)">No files yet.</div>'; return; }
+  files.forEach((f,idx)=>{
+    const div=document.createElement('div'); div.className='fileitem';
+    const left=document.createElement('div'); left.textContent=f.name;
+    const right=document.createElement('div');
+    const bPrev=document.createElement('button'); bPrev.className='btn'; bPrev.textContent='Preview';
+    bPrev.onclick=()=>{ activeIndex=idx; updatePreview(); };
+    const bRem=document.createElement('button'); bRem.className='btn warn'; bRem.textContent='Remove';
+    bRem.onclick=()=>{ files.splice(idx,1); if(activeIndex===idx) activeIndex=-1; renderFileList(); updateCounter(); updatePreview(); };
+    right.appendChild(bPrev); right.appendChild(bRem);
+    div.appendChild(left); div.appendChild(right); list.appendChild(div);
+  });
+}
+function updateCounter(){ el('count').textContent=`${files.length} file${files.length===1?'':'s'}`; }
+
+function updatePreview(){
+  const pre=el('preview'); pre.textContent='';
+  if(activeIndex<0 || !files[activeIndex]){ pre.textContent='(Open a file preview)'; return; }
+  const s=currentSettings(); const fname=files[activeIndex].name; const base=sanitizeJobName(fname.replace(/\.gjf$/i,''));
+  try{
+    const inp = makeINPFromGJF(files[activeIndex].text, base, s);
+    const slm = slurmFor(s.profile, base, s);
+    pre.textContent = (previewTab==='inp') ? inp : slm;
+  }catch(e){ pre.textContent = 'Parse error: ' + (e?.message||e); }
+}
+
+/* ---------- File intake ---------- */
+function acceptFiles(fileList){
+  const arr = Array.from(fileList||[]).filter(f=>/\.gjf$/i.test(f.name));
+  if(arr.length===0){ toast('No .gjf files detected.'); return; }
+  Promise.all(arr.map(f=> new Promise((res,rej)=>{
+    const fr=new FileReader(); fr.onload=()=>res({name:f.name, text:String(fr.result||'')}); fr.onerror=()=>rej(fr.error||new Error('read error')); fr.readAsText(f);
+  }))).then(items=>{
+    files.push(...items); renderFileList(); updateCounter(); if(activeIndex<0 && files.length>0){ activeIndex=0; }
+    updatePreview(); toast(`Added ${items.length} file${items.length===1?'':'s'}.`);
+  }).catch(e=> toast('Read error: '+(e?.message||e)));
+}
+
+/* ---------- ZIP ---------- */
+async function generateZip(){
+  if(files.length===0){ toast('Add some .gjf files first.'); return; }
+  const s=currentSettings(); const zip=new JSZip(); const lines=[];
+  for(const f of files){
+    const base=sanitizeJobName(f.name.replace(/\.gjf$/i,''));
+    let inp, slm;
+    try{ inp=makeINPFromGJF(f.text, base, s); slm=slurmFor(s.profile, base, s); }
+    catch(e){ toast(`Parse failed for ${f.name}: ${e?.message||e}`); return; }
+    zip.file(`${base}.inp`, inp);
+    zip.file(`${base}.slurm`, slm);
+    lines.push(`sbatch ${base}.slurm`);
+  }
+  zip.file('submit_all.sh', `#!/usr/bin/env bash\nset -euo pipefail\n${lines.join('\n')}\n`);
+  const blob=await zip.generateAsync({type:'blob'}); saveAs(blob, 'autoslurm_bundle.zip'); toast('ZIP ready. Upload and run submit_all.sh');
+}
+
+/* ---------- Events ---------- */
+function hook(){
+  // preset select
+  refreshPresetSelect();
+  el('applyPreset').onclick=()=>{
+    const p=getPresetByValue(el('presetSelect').value);
+    if(!p || !p.settings){ toast('No preset selected.'); return; }
+    applySettingsToUI(p.settings);
+    saveSettings(currentSettings());
+    updatePreview();
+    toast(`Applied: ${p.name}`);
+  };
+  el('saveAsPreset').onclick=()=>{
+    const name = prompt('Preset name (e.g., "My TACC preset")');
+    if(!name) return;
+    const map=loadUserPresets(); map[name]=currentSettings(); saveUserPresets(map); refreshPresetSelect(); el('presetSelect').value=`user:${name}`; toast('Saved custom preset.');
+  };
+  el('savePreset').onclick=()=>{ saveSettings(currentSettings()); toast('Saved changes to "My saved preset".'); refreshPresetSelect(); };
+  el('deletePreset').onclick=()=>{
+    const v=el('presetSelect').value;
+    if(!v.startsWith('user:')){ toast('Only custom presets can be deleted.'); return; }
+    const name=v.slice(5); const map=loadUserPresets(); if(!(name in map)){ toast('Preset not found.'); return; }
+    if(confirm(`Delete custom preset "${name}"?`)){ delete map[name]; saveUserPresets(map); refreshPresetSelect(); toast('Preset deleted.'); }
+  };
+  el('resetPreset').onclick=()=>{ const d=defaultSettings(); applySettingsToUI(d); saveSettings(d); updatePreview(); toast('Defaults restored.'); };
+
+  // reflect changes live
+  ['profile','account','email','partition','wall','nodes','ntasks','nproc','mem','scratch','runFrom','registry','route','includeChk']
+    .forEach(id=> el(id).addEventListener(id==='includeChk'?'change':'input',()=>{ saveSettings(currentSettings()); updatePreview(); }));
+
+  // tabs
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); previewTab=t.dataset.tab; updatePreview(); };
+  });
+
+  // dropzone
+  const drop=el('drop');
+  drop.addEventListener('dragover',e=>{ e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave',()=> drop.classList.remove('drag'));
+  drop.addEventListener('drop',e=>{ e.preventDefault(); drop.classList.remove('drag'); acceptFiles(e.dataTransfer.files); });
+  el('filepick').addEventListener('change',e=> acceptFiles(e.target.files));
+
+  el('genZip').onclick=generateZip;
+}
+
+/* ---------- Boot ---------- */
+(function(){
+  applySettingsToUI(loadSettings());
+  hook();
+  renderFileList(); updateCounter(); toast('Ready.');
+})();
+</script>
+</body>
+</html>
