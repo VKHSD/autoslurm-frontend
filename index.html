@@ -16,7 +16,6 @@
   header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);background:#10131d}
   header h1{font-size:16px;margin:0}
   .muted{color:var(--muted);font-size:12px}
-  /* wider left panel + responsive stacking */
   .wrap{
     display:grid; grid-template-columns:740px 1fr; gap:12px; padding:12px;
     height:calc(100vh - 58px); box-sizing:border-box;
@@ -61,7 +60,7 @@
 <header>
   <div>
     <h1>AutoSlurm</h1>
-    <div class="muted">Drop .gjf → get .inp + .slurm (+ submit_all.sh). Settings & custom presets persist locally.</div>
+    <div class="muted">Drop .gjf → get .inp + .slurm (+ submit_all.sh). Robust SLURM template: cpus-per-task + mem + job-unique GAUSS_SCRDIR on scratch (like the one that finally worked).</div>
   </div>
   <div><span class="pill" id="count">0 files</span></div>
 </header>
@@ -91,7 +90,7 @@
       </div>
 
       <div class="grid2">
-        <div class="row"><label>Project / Account</label><input id="account" type="text" placeholder="e.g. CHEM123"></div>
+        <div class="row"><label>Project / Account</label><input id="account" type="text" placeholder="e.g. CHE21031"></div>
         <div class="row"><label>Email</label><input id="email" type="email" placeholder="you@uni.edu"></div>
       </div>
 
@@ -102,33 +101,37 @@
 
       <div class="grid2">
         <div class="row"><label>Nodes</label><input id="nodes" type="number" min="1" value="1"></div>
-        <div class="row"><label>Tasks / Node</label><input id="ntasks" type="number" min="1" value="1"></div>
+        <div class="row"><label>Tasks</label><input id="ntasks" type="number" min="1" value="1"></div>
       </div>
 
       <div class="grid2">
-        <div class="row"><label>nprocshared</label><input id="nproc" type="number" min="1" value="12"></div>
-        <div class="row"><label>mem</label><input id="mem" type="text" value="56GB"></div>
+        <div class="row"><label>nprocshared / cpus-per-task</label><input id="nproc" type="number" min="1" value="12"></div>
+        <div class="row"><label>Gaussian mem (e.g. 56GB)</label><input id="mem" type="text" value="56GB"></div>
       </div>
 
-      <div class="row"><label>Scratch dir</label><input id="scratch" type="text" value="/dev/shm/$USER"></div>
+      <div class="row stacked">
+        <label>Scratch base dir</label>
+        <input id="scratch" type="text" value="/scratch/10528/$USER">
+        <small class="help">AutoSlurm will create <code>$GAUSS_SCRDIR=&quot;{base}/g16_$SLURM_JOB_ID&quot;</code> (job-unique). Set base to <code>/scratch/10528/$USER</code> (LS6) or <code>/scratch/$USER</code> (generic). You can still use <code>/dev/shm/$USER</code> if you want, but scratch fillups can kill Gaussian.</small>
+      </div>
 
       <div class="row"><label>Run from</label>
         <select id="runFrom">
-          <option value="scratch">Scratch ($GAUSS_SCRDIR)</option>
-          <option value="submit">Submit dir ($SLURM_SUBMIT_DIR)</option>
+          <option value="scratch">Stage to scratch and run there (recommended)</option>
+          <option value="submit">Run in submit dir (still uses GAUSS_SCRDIR)</option>
         </select>
       </div>
 
       <div class="row stacked">
-        <label>Registry folder (abs path)</label>
+        <label>Registry folder (abs path, optional)</label>
         <input id="registry" type="text" placeholder="/home1/xxxxx/you/gaussian">
-        <small class="help">Used when “Run from” = Scratch: .inp is copied in and *.log copied back here. Leave blank to copy back to submit dir.</small>
+        <small class="help">Optional extra copy-back target (in addition to $SLURM_SUBMIT_DIR). Leave blank to only copy to submit dir.</small>
       </div>
 
       <div class="row">
         <label>Include %chk line</label>
         <input id="includeChk" type="checkbox" checked>
-        <small class="help">Uncheck if checkpoint files have been causing memory/queue issues.</small>
+        <small class="help">If checked: writes <code>%chk=JOB.chk</code>. The SLURM script will copy it back if it exists.</small>
       </div>
 
       <div class="row stacked">
@@ -166,44 +169,44 @@
 
 <script>
 /* ---------- Keys ---------- */
-const KEY_SETTINGS = 'autoslurm_settings_v3';
-const KEY_PRESETS  = 'autoslurm_user_presets_v3'; // { name: settings }
+const KEY_SETTINGS = 'autoslurm_settings_v4';
+const KEY_PRESETS  = 'autoslurm_user_presets_v4'; // { name: settings }
 
 /* ---------- Defaults & built-ins ---------- */
 function defaultSettings(){
   return {
     profile: 'ls6',
-    account: 'CHEM123',
+    account: 'CHE21031',
     email: '',
     partition: 'normal',
     wall: '47:50:00',
     nodes: 1,
-    ntasks: 1,
-    nproc: 12,
-    mem: '56GB',
-    scratch: '/dev/shm/$USER',
-    runFrom: 'scratch',             // 'scratch' | 'submit'
-    registry: '',                   // abs path – optional
-    includeChk: true,               // new: toggle %chk in .inp
+    ntasks: 1,               // still exposed, but templates default to 1 anyway
+    nproc: 12,               // used for both %nprocshared and --cpus-per-task
+    mem: '56GB',             // Gaussian %mem
+    scratch: '/scratch/10528/$USER', // base; script appends /g16_$SLURM_JOB_ID
+    runFrom: 'scratch',      // 'scratch' | 'submit'
+    registry: '',            // optional extra copy-back
+    includeChk: true,
     route: '# opt freq B3LYP/6-31G(d) geom=connectivity'
   };
 }
 
 // Built-ins (read-only)
 const BUILTIN_PRESETS = [
-  { name:'TACC Lonestar6 — standard (12c/56GB)', builtin:true,
-    settings:{...defaultSettings(), includeChk:true} },
-  { name:'TACC Lonestar6 — Copy-to-scratch (no %chk)', builtin:true,
-    settings:{...defaultSettings(), includeChk:false} },
-  { name:'Generic — small (8c/32GB, 24h)', builtin:true,
+  { name:'TACC Lonestar6 — robust scratch (12c/56GB)', builtin:true,
+    settings:{...defaultSettings(), profile:'ls6', scratch:'/scratch/10528/$USER', includeChk:true} },
+  { name:'TACC Lonestar6 — robust scratch (no %chk)', builtin:true,
+    settings:{...defaultSettings(), profile:'ls6', scratch:'/scratch/10528/$USER', includeChk:false} },
+  { name:'Generic — robust scratch (8c/32GB, 24h)', builtin:true,
     settings:{profile:'generic', account:'ACCOUNT', email:'', partition:'compute', wall:'24:00:00',
               nodes:1, ntasks:1, nproc:8, mem:'32GB', scratch:'/scratch/$USER',
-              runFrom:'submit', registry:'', includeChk:true,
+              runFrom:'scratch', registry:'', includeChk:true,
               route:'# opt freq B3LYP/6-31G(d) geom=connectivity'} },
-  { name:'Generic — big (32c/128GB, 48h)', builtin:true,
+  { name:'Generic — robust scratch (32c/128GB, 48h)', builtin:true,
     settings:{profile:'generic', account:'ACCOUNT', email:'', partition:'compute', wall:'48:00:00',
               nodes:1, ntasks:1, nproc:32, mem:'128GB', scratch:'/scratch/$USER',
-              runFrom:'submit', registry:'', includeChk:true,
+              runFrom:'scratch', registry:'', includeChk:true,
               route:'# opt freq B3LYP/6-31G(d) geom=connectivity'} },
 ];
 
@@ -212,7 +215,12 @@ function el(id){ return document.getElementById(id); }
 function val(id){ return el(id).value.trim(); }
 function num(id){ return parseInt(el(id).value,10)||0; }
 function setv(id,v){ el(id).value = v; }
-function toast(msg, ms=2500){ const s=el('status'); s.textContent=msg; s.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>s.hidden=true,ms); }
+function toast(msg, ms=2500){
+  const s=el('status');
+  s.textContent=msg; s.hidden=false;
+  clearTimeout(toast._t);
+  toast._t=setTimeout(()=>s.hidden=true,ms);
+}
 
 /* ---------- Settings persistence ---------- */
 function loadSettings(){
@@ -258,13 +266,11 @@ function saveUserPresets(map){ localStorage.setItem(KEY_PRESETS, JSON.stringify(
 function refreshPresetSelect(){
   const sel = el('presetSelect'); sel.innerHTML='';
 
-  // “My saved preset (current settings)”
   const optMine = document.createElement('option');
   optMine.value = '__mine__';
   optMine.textContent = 'My saved preset';
   sel.appendChild(optMine);
 
-  // Built-ins
   BUILTIN_PRESETS.forEach((p,i)=>{
     const o = document.createElement('option');
     o.value = `__builtin_${i}`;
@@ -272,7 +278,6 @@ function refreshPresetSelect(){
     sel.appendChild(o);
   });
 
-  // User customs
   const map = loadUserPresets();
   const keys = Object.keys(map).sort((a,b)=>a.localeCompare(b));
   if(keys.length){
@@ -285,18 +290,19 @@ function refreshPresetSelect(){
     });
     sel.appendChild(grp);
   }
-  // default selection
   sel.value='__mine__';
 }
 
 function getPresetByValue(valStr){
   if(valStr==='__mine__') return { name:'My saved preset', builtin:false, settings:loadSettings() };
   if(valStr.startsWith('__builtin_')){
-    const idx = parseInt(valStr.replace('__builtin_',''),10);  // FIX: correct index extraction
+    const idx = parseInt(valStr.replace('__builtin_',''),10);
     return BUILTIN_PRESETS[idx];
   }
   if(valStr.startsWith('user:')){
-    const name = valStr.slice(5); const map=loadUserPresets(); return { name, builtin:false, settings:map[name] };
+    const name = valStr.slice(5);
+    const map=loadUserPresets();
+    return { name, builtin:false, settings:map[name] };
   }
   return null;
 }
@@ -349,7 +355,7 @@ function parseGaussianGJF(text){
 function makeINPFromGJF(gjfText, jobName, settings){
   const { title, body } = parseGaussianGJF(gjfText);
   const link0List = [];
-  if(settings.includeChk) link0List.push(`%chk=${jobName}.chk`);   // NEW: optional
+  if(settings.includeChk) link0List.push(`%chk=${jobName}.chk`);
   link0List.push(`%nprocshared=${settings.nproc}`);
   link0List.push(`%mem=${settings.mem}`);
   link0List.push(''); // blank
@@ -363,54 +369,104 @@ function sanitizeJobName(name){
   return name.replace(/\s+/g,'_').replace(/[^A-Za-z0-9_.-]/g,'_').replace(/^_+|_+$/g,'');
 }
 
+// Convert "200GB" -> "200G", "56GB" -> "56G", "128G" -> "128G", "64000MB" -> "64000M"
+function memToSlurm(memStr){
+  let m = (memStr||'').trim();
+  if(!m) return '1G';
+  m = m.replace(/\s+/g,'');
+  m = m.replace(/gb$/i,'G').replace(/g$/i,'G');
+  m = m.replace(/mb$/i,'M').replace(/m$/i,'M');
+  m = m.replace(/tb$/i,'T').replace(/t$/i,'T');
+  // If user typed "200GB" -> "200G". If they typed "200G" stays.
+  return m;
+}
+
 function slurmFor(profile, jobName, s){
+  const slurmMem = memToSlurm(s.mem);
+
   const header =
 `#!/bin/bash
 #----------------------------
-# SLURM script generated by AutoSlurm
+# SLURM
 #----------------------------
-
 #SBATCH -J ${jobName}
 #SBATCH -o ${jobName}.%j.out
 #SBATCH -e ${jobName}.%j.err
 #SBATCH -p ${s.partition}
 #SBATCH -N ${s.nodes}
-#SBATCH -n ${s.ntasks}
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${s.nproc}
+#SBATCH --mem=${slurmMem}
 #SBATCH -A ${s.account}
 #SBATCH -t ${s.wall}
-${s.email ? `#SBATCH --mail-user=${s.email}\n#SBATCH --mail-type=all` : ''}
+${s.email ? `#SBATCH --mail-user=${s.email}\n#SBATCH --mail-type=ALL` : ''}
+
+set -euo pipefail
 
 echo "Starting job on $(date)"
 module load gaussian
 module list
+ulimit -s unlimited
 
-export GAUSS_SCRDIR=${s.scratch}
-mkdir -p "$GAUSS_SCRDIR"
+# Make Gaussian thread count match SLURM allocation
+export OMP_NUM_THREADS="\${SLURM_CPUS_PER_TASK:-${s.nproc}}"
+
+# Big scratch (job-unique)
+export GAUSS_SCRDIR="${s.scratch}/g16_\${SLURM_JOB_ID}"
+mkdir -p "\$GAUSS_SCRDIR"
+
+JOB="${jobName}"
+SUBMIT_DIR="\${SLURM_SUBMIT_DIR}"
+
+echo "Submit dir : \$SUBMIT_DIR"
+echo "Scratch dir: \$GAUSS_SCRDIR"
 `;
 
-  // Body: run either from scratch or submit dir
   let body = '';
   if(s.runFrom === 'scratch'){
-    const srcInp = s.registry ? `${s.registry}/${jobName}.inp` : `$SLURM_SUBMIT_DIR/${jobName}.inp`;
-    const copyBack = s.registry ? s.registry : '$SLURM_SUBMIT_DIR';
     body =
-`cd "$GAUSS_SCRDIR"
-echo "Working dir: $(pwd)"
-echo "Copying input from: ${srcInp}"
-cp ${srcInp} .
+`# Stage in
+cp "\${SUBMIT_DIR}/\${JOB}.inp" "\$GAUSS_SCRDIR/"
+cd "\$GAUSS_SCRDIR"
 
 echo "Launching Gaussian..."
-time g16 < ${jobName}.inp > ${jobName}.log
+time g16 < "\${JOB}.inp" > "\${JOB}.log"
 
-echo "Copying logs back to: ${copyBack}"
-cp *.log ${copyBack}
+# Stage out
+cp -f "\${JOB}.log" "\${SUBMIT_DIR}/"
+if [ -f "\${JOB}.chk" ]; then
+  cp -f "\${JOB}.chk" "\${SUBMIT_DIR}/"
+fi
+
+${s.registry ? `# Optional extra copy-back
+mkdir -p "${s.registry}" || true
+cp -f "\${JOB}.log" "${s.registry}/" || true
+if [ -f "\${JOB}.chk" ]; then
+  cp -f "\${JOB}.chk" "${s.registry}/" || true
+fi
+` : ''}
+
+echo "Cleaning scratch..."
+rm -rf "\$GAUSS_SCRDIR"
 `;
   } else {
+    // Run in submit dir but still use GAUSS_SCRDIR for scratch
     body =
-`cd "$SLURM_SUBMIT_DIR"
-echo "Working dir: $(pwd)"
+`cd "\${SUBMIT_DIR}"
+echo "Working dir : \$(pwd)"
 echo "Launching Gaussian..."
-time g16 < ${jobName}.inp > ${jobName}.log
+time g16 < "\${JOB}.inp" > "\${JOB}.log"
+
+${s.registry ? `# Optional extra copy-back
+mkdir -p "${s.registry}" || true
+cp -f "\${JOB}.log" "${s.registry}/" || true
+if [ -f "\${JOB}.chk" ]; then
+  cp -f "\${JOB}.chk" "${s.registry}/" || true
+fi
+` : ''}
+
+# Cleanup scratch
+rm -rf "\$GAUSS_SCRDIR"
 `;
   }
 
@@ -425,15 +481,21 @@ let previewTab = 'inp';
 
 function renderFileList(){
   const list = el('filelist'); list.innerHTML='';
-  if(files.length===0){ list.innerHTML='<div class="fileitem" style="justify-content:center;color:var(--muted)">No files yet.</div>'; return; }
+  if(files.length===0){
+    list.innerHTML='<div class="fileitem" style="justify-content:center;color:var(--muted)">No files yet.</div>';
+    return;
+  }
   files.forEach((f,idx)=>{
     const div=document.createElement('div'); div.className='fileitem';
     const left=document.createElement('div'); left.textContent=f.name;
     const right=document.createElement('div');
+
     const bPrev=document.createElement('button'); bPrev.className='btn'; bPrev.textContent='Preview';
     bPrev.onclick=()=>{ activeIndex=idx; updatePreview(); };
+
     const bRem=document.createElement('button'); bRem.className='btn warn'; bRem.textContent='Remove';
     bRem.onclick=()=>{ files.splice(idx,1); if(activeIndex===idx) activeIndex=-1; renderFileList(); updateCounter(); updatePreview(); };
+
     right.appendChild(bPrev); right.appendChild(bRem);
     div.appendChild(left); div.appendChild(right); list.appendChild(div);
   });
@@ -443,12 +505,16 @@ function updateCounter(){ el('count').textContent=`${files.length} file${files.l
 function updatePreview(){
   const pre=el('preview'); pre.textContent='';
   if(activeIndex<0 || !files[activeIndex]){ pre.textContent='(Open a file preview)'; return; }
-  const s=currentSettings(); const fname=files[activeIndex].name; const base=sanitizeJobName(fname.replace(/\.gjf$/i,''));
+  const s=currentSettings();
+  const fname=files[activeIndex].name;
+  const base=sanitizeJobName(fname.replace(/\.gjf$/i,''));
   try{
     const inp = makeINPFromGJF(files[activeIndex].text, base, s);
     const slm = slurmFor(s.profile, base, s);
     pre.textContent = (previewTab==='inp') ? inp : slm;
-  }catch(e){ pre.textContent = 'Parse error: ' + (e?.message||e); }
+  }catch(e){
+    pre.textContent = 'Parse error: ' + (e?.message||e);
+  }
 }
 
 /* ---------- File intake ---------- */
@@ -456,34 +522,50 @@ function acceptFiles(fileList){
   const arr = Array.from(fileList||[]).filter(f=>/\.gjf$/i.test(f.name));
   if(arr.length===0){ toast('No .gjf files detected.'); return; }
   Promise.all(arr.map(f=> new Promise((res,rej)=>{
-    const fr=new FileReader(); fr.onload=()=>res({name:f.name, text:String(fr.result||'')}); fr.onerror=()=>rej(fr.error||new Error('read error')); fr.readAsText(f);
+    const fr=new FileReader();
+    fr.onload=()=>res({name:f.name, text:String(fr.result||'')});
+    fr.onerror=()=>rej(fr.error||new Error('read error'));
+    fr.readAsText(f);
   }))).then(items=>{
-    files.push(...items); renderFileList(); updateCounter(); if(activeIndex<0 && files.length>0){ activeIndex=0; }
-    updatePreview(); toast(`Added ${items.length} file${items.length===1?'':'s'}.`);
+    files.push(...items);
+    renderFileList(); updateCounter();
+    if(activeIndex<0 && files.length>0){ activeIndex=0; }
+    updatePreview();
+    toast(`Added ${items.length} file${items.length===1?'':'s'}.`);
   }).catch(e=> toast('Read error: '+(e?.message||e)));
 }
 
 /* ---------- ZIP ---------- */
 async function generateZip(){
   if(files.length===0){ toast('Add some .gjf files first.'); return; }
-  const s=currentSettings(); const zip=new JSZip(); const lines=[];
+  const s=currentSettings();
+  const zip=new JSZip();
+  const lines=[];
+
   for(const f of files){
     const base=sanitizeJobName(f.name.replace(/\.gjf$/i,''));
     let inp, slm;
-    try{ inp=makeINPFromGJF(f.text, base, s); slm=slurmFor(s.profile, base, s); }
-    catch(e){ toast(`Parse failed for ${f.name}: ${e?.message||e}`); return; }
+    try{
+      inp=makeINPFromGJF(f.text, base, s);
+      slm=slurmFor(s.profile, base, s);
+    }catch(e){
+      toast(`Parse failed for ${f.name}: ${e?.message||e}`);
+      return;
+    }
     zip.file(`${base}.inp`, inp);
     zip.file(`${base}.slurm`, slm);
     lines.push(`sbatch ${base}.slurm`);
   }
   zip.file('submit_all.sh', `#!/usr/bin/env bash\nset -euo pipefail\n${lines.join('\n')}\n`);
-  const blob=await zip.generateAsync({type:'blob'}); saveAs(blob, 'autoslurm_bundle.zip'); toast('ZIP ready. Upload and run submit_all.sh');
+  const blob=await zip.generateAsync({type:'blob'});
+  saveAs(blob, 'autoslurm_bundle.zip');
+  toast('ZIP ready. Upload and run submit_all.sh');
 }
 
 /* ---------- Events ---------- */
 function hook(){
-  // preset select
   refreshPresetSelect();
+
   el('applyPreset').onclick=()=>{
     const p=getPresetByValue(el('presetSelect').value);
     if(!p || !p.settings){ toast('No preset selected.'); return; }
@@ -492,27 +574,65 @@ function hook(){
     updatePreview();
     toast(`Applied: ${p.name}`);
   };
+
   el('saveAsPreset').onclick=()=>{
     const name = prompt('Preset name (e.g., "My TACC preset")');
     if(!name) return;
-    const map=loadUserPresets(); map[name]=currentSettings(); saveUserPresets(map); refreshPresetSelect(); el('presetSelect').value=`user:${name}`; toast('Saved custom preset.');
+    const map=loadUserPresets();
+    map[name]=currentSettings();
+    saveUserPresets(map);
+    refreshPresetSelect();
+    el('presetSelect').value=`user:${name}`;
+    toast('Saved custom preset.');
   };
-  el('savePreset').onclick=()=>{ saveSettings(currentSettings()); toast('Saved changes to "My saved preset".'); refreshPresetSelect(); };
+
+  el('savePreset').onclick=()=>{
+    saveSettings(currentSettings());
+    toast('Saved changes to "My saved preset".');
+    refreshPresetSelect();
+  };
+
   el('deletePreset').onclick=()=>{
     const v=el('presetSelect').value;
     if(!v.startsWith('user:')){ toast('Only custom presets can be deleted.'); return; }
-    const name=v.slice(5); const map=loadUserPresets(); if(!(name in map)){ toast('Preset not found.'); return; }
-    if(confirm(`Delete custom preset "${name}"?`)){ delete map[name]; saveUserPresets(map); refreshPresetSelect(); toast('Preset deleted.'); }
+    const name=v.slice(5);
+    const map=loadUserPresets();
+    if(!(name in map)){ toast('Preset not found.'); return; }
+    if(confirm(`Delete custom preset "${name}"?`)){
+      delete map[name];
+      saveUserPresets(map);
+      refreshPresetSelect();
+      toast('Preset deleted.');
+    }
   };
-  el('resetPreset').onclick=()=>{ const d=defaultSettings(); applySettingsToUI(d); saveSettings(d); updatePreview(); toast('Defaults restored.'); };
+
+  el('resetPreset').onclick=()=>{
+    const d=defaultSettings();
+    applySettingsToUI(d);
+    saveSettings(d);
+    updatePreview();
+    toast('Defaults restored.');
+  };
 
   // reflect changes live
-  ['profile','account','email','partition','wall','nodes','ntasks','nproc','mem','scratch','runFrom','registry','route','includeChk']
-    .forEach(id=> el(id).addEventListener(id==='includeChk'?'change':'input',()=>{ saveSettings(currentSettings()); updatePreview(); }));
+  [
+    'profile','account','email','partition','wall','nodes','ntasks',
+    'nproc','mem','scratch','runFrom','registry','route','includeChk'
+  ].forEach(id=>{
+    el(id).addEventListener(id==='includeChk'?'change':'input',()=>{
+      saveSettings(currentSettings());
+      updatePreview();
+    });
+  });
 
   // tabs
   document.querySelectorAll('.tab').forEach(t=>{
-    t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); previewTab=t.dataset.tab; updatePreview(); };
+    t.onclick=()=>{
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      previewTab=t.dataset.tab;
+      updatePreview();
+    };
   });
 
   // dropzone
@@ -520,8 +640,8 @@ function hook(){
   drop.addEventListener('dragover',e=>{ e.preventDefault(); drop.classList.add('drag'); });
   drop.addEventListener('dragleave',()=> drop.classList.remove('drag'));
   drop.addEventListener('drop',e=>{ e.preventDefault(); drop.classList.remove('drag'); acceptFiles(e.dataTransfer.files); });
-  el('filepick').addEventListener('change',e=> acceptFiles(e.target.files));
 
+  el('filepick').addEventListener('change',e=> acceptFiles(e.target.files));
   el('genZip').onclick=generateZip;
 }
 
@@ -529,7 +649,9 @@ function hook(){
 (function(){
   applySettingsToUI(loadSettings());
   hook();
-  renderFileList(); updateCounter(); toast('Ready.');
+  renderFileList();
+  updateCounter();
+  toast('Ready.');
 })();
 </script>
 </body>
