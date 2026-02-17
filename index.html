@@ -361,7 +361,9 @@ function makeINPFromGJF(gjfText, jobName, settings){
   link0List.push(''); // blank
 
   const route = (settings.route || '#').trim();
-  return [ link0List.join("\n"), route, '', title, '', body ].join("\n") + "\n";
+  // End with 5 blank lines (adds 5 extra "\n" after the normal final newline)
+  return [ link0List.join("\n"), route, '', title, '', body ].join("\n") + "\n" + "\n".repeat(5);
+
 }
 
 /* ---------- SLURM templates ---------- */
